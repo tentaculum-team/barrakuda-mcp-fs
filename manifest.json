@@ -5,7 +5,7 @@
   "author": "Tentaculum-team",
   "license": "MIT",
   "type": "mcp",
-  "tags": ["barrakuda", "mcp", "fs", "builtin"],
+  "tags": ["barrakuda", "mcp", "fs"],
   "server": "fs",
   "entry": "barrakuda-mcp-fs",
   "platforms": ["windows", "linux", "macos"],

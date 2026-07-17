@@ -117,9 +117,12 @@ groups.
 - `pkg/errors`          — typed error sentinels (`ErrPathOutsideSandbox`, …)
 - `cmd/api`             — wiring + stdio entrypoint
 - `manifest.json`       — schema-valid mod manifest (see
-  `barrakuda-mod-creator/docs/manifest-schema.md`) describing every tool
-  above; this repo still ships as a builtin Tauri sidecar (not an installed
-  mod), so the manifest is documentation/reference, not runtime input
+  `barrakuda-mod-creator/docs/manifest-schema.md`), the same one the
+  Barrakuda app's catalog serves (curator adds `package` pointing at this
+  repo's GitHub Release zips); the app installs and runs this like any
+  community mod, no special-casing
+- `release/`            — per-OS release zips (`make release`, gitignored;
+  built via `make_release_zip.py`, then `gh release create` uploads them)
 
 ## Build
 
