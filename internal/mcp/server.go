@@ -77,16 +77,24 @@ func fsReadTool(fs *service.FileService) mcpsdk.Tool {
 				"root, or an ABSOLUTE path inside a folder the user granted via "+
 				"fs.request_access. Returns UTF-8 text; a non-text (binary) file "+
 				"is refused with an error rather than returned as garbled "+
-				"content. Large files are truncated to a byte cap (see "+
-				"`max_bytes`) and flagged as truncated. Paths outside the sandbox "+
-				"and all granted folders are refused. Read-only.",
+				"content. Output is limited to `limit` lines (default 1000) "+
+				"starting at line `offset` — a truncated result says which "+
+				"offset to continue from; read only the range you need. Paths "+
+				"outside the sandbox and all granted folders are refused. "+
+				"Read-only.",
 		),
 		mcpsdk.WithString("path",
 			mcpsdk.Required(),
 			mcpsdk.Description("File to read, relative to the sandbox root."),
 		),
+		mcpsdk.WithNumber("offset",
+			mcpsdk.Description("1-indexed line to start reading from (default 1). Use with limit to page through big files."),
+		),
+		mcpsdk.WithNumber("limit",
+			mcpsdk.Description("Max lines to return (default 1000)."),
+		),
 		mcpsdk.WithNumber("max_bytes",
-			mcpsdk.Description("Max bytes to read (default 10MB, hard ceiling 50MB). Larger files are truncated."),
+			mcpsdk.Description("Max bytes to read from disk (default 10MB, hard ceiling 50MB). Rarely needed — use offset/limit to control output size."),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -102,12 +110,14 @@ func fsReadHandler(fs *service.FileService) func(context.Context, mcpsdk.CallToo
 			return mcpsdk.NewToolResultError(err.Error()), nil
 		}
 		maxBytes := int64(req.GetInt("max_bytes", 0))
+		offset := req.GetInt("offset", 1)
+		limit := req.GetInt("limit", 0)
 
 		res, err := fs.Read(path, maxBytes)
 		if err != nil {
 			return sandboxAwareError("read", path, err), nil
 		}
-		return mcpsdk.NewToolResultText(formatRead(path, res)), nil
+		return mcpsdk.NewToolResultText(formatRead(path, res, offset, limit)), nil
 	}
 }
 
@@ -169,10 +179,21 @@ func fsEditHandler(fs *service.FileService) func(context.Context, mcpsdk.CallToo
 		if err != nil {
 			return sandboxAwareError("edit", path, err), nil
 		}
-		return mcpsdk.NewToolResultText(
-			fmt.Sprintf("edited %s (%d replacement(s), %d bytes written)", path, res.Replacements, res.BytesWritten),
-		), nil
+		return mcpsdk.NewToolResultText(formatEdit(path, res)), nil
 	}
+}
+
+// formatEdit devolve só "path (N replacements)": o modelo JÁ tem old/new nos
+// argumentos da tool_call — ecoá-los de volta como diff duplicava esses bytes
+// no histórico da conversa pra sempre (args + result, os dois re-enviados a
+// cada turno). O diff visual que o app mostra é reconstruído client-side a
+// partir dos args (barrakuda-software, bolha de tool result de fs.edit).
+func formatEdit(path string, res domain.EditResult) string {
+	plural := ""
+	if res.Replacements != 1 {
+		plural = "s"
+	}
+	return fmt.Sprintf("%s (%d replacement%s)", path, res.Replacements, plural)
 }
 
 func fsSearchTool(fs *service.FileService) mcpsdk.Tool {
@@ -493,18 +514,53 @@ func formatListing(path string, entries []domain.FileEntry) string {
 	return b.String()
 }
 
-func formatRead(path string, res domain.ReadResult) string {
-	var b strings.Builder
-	if res.Truncated {
-		fmt.Fprintf(&b, "[TRUNCATED — file is %d bytes, showing the first portion]\n", res.SizeBytes)
-	} else {
-		fmt.Fprintf(&b, "%s (%d bytes)\n", path, res.SizeBytes)
+// Tetos de output do fs.read — controlam o que entra no CONTEXTO do modelo
+// (o cap de disco, max_bytes, segue à parte). Truncou → o rodapé diz de qual
+// offset continuar, então ler arquivo grande vira paginação incremental em
+// vez de um tool_result gigante que fica no histórico da conversa pra sempre.
+const (
+	defaultReadLines   = 1000
+	maxReadOutputBytes = 48 * 1024
+)
+
+func formatRead(path string, res domain.ReadResult, offset, limit int) string {
+	lines := strings.Split(res.Content, "\n")
+	total := len(lines)
+	if offset < 1 {
+		offset = 1
 	}
-	b.WriteString("--- content ---\n")
+	if limit <= 0 {
+		limit = defaultReadLines
+	}
+	if offset > total {
+		return fmt.Sprintf("%s has %d lines; offset %d is beyond the end", path, total, offset)
+	}
+	end := min(offset-1+limit, total)
+
+	// Corpo primeiro: o teto de bytes pode parar antes de `end`, e o header
+	// precisa do range realmente emitido.
 	// Prefixa cada linha com "N→" (1-indexed) — dá à IA como citar linha e
 	// contexto suficiente pra escrever old_string de fs.edit com precisão.
-	for i, line := range strings.Split(res.Content, "\n") {
-		fmt.Fprintf(&b, "%d→%s\n", i+1, line)
+	var body strings.Builder
+	last := offset - 1
+	for i := offset - 1; i < end; i++ {
+		line := fmt.Sprintf("%d→%s\n", i+1, lines[i])
+		if body.Len() > 0 && body.Len()+len(line) > maxReadOutputBytes {
+			break
+		}
+		body.WriteString(line)
+		last = i + 1
+	}
+
+	var b strings.Builder
+	if res.Truncated {
+		fmt.Fprintf(&b, "[file is %d bytes; only the first %d bytes were read from disk]\n", res.SizeBytes, len(res.Content))
+	}
+	fmt.Fprintf(&b, "%s (%d bytes, lines %d-%d of %d)\n", path, res.SizeBytes, offset, last, total)
+	b.WriteString("--- content ---\n")
+	b.WriteString(body.String())
+	if last < total {
+		fmt.Fprintf(&b, "[TRUNCATED — continue with offset=%d]\n", last+1)
 	}
 	return b.String()
 }
