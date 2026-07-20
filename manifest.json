@@ -14,92 +14,94 @@
   "tools": [
     {
       "name": "fs.list",
-      "description": "[fsRead] Lists the entries of a directory on the LOCAL machine, inside the sandbox root. `path` is relative to that root (default \".\" = the root itself), or an ABSOLUTE path inside a folder the user granted via fs.request_access. Paths that escape the sandbox and all granted folders (via .., an absolute path, or a symlink pointing outside) are refused. Read-only.",
+      "description": "[fsRead] Lists a directory on the LOCAL machine. Path rules for ALL fs.* tools: `path` is relative to the sandbox root (default \".\"), or an ABSOLUTE path inside a folder the user granted via fs.request_access; anything outside (.., symlinks out, other absolute paths) is refused. Read-only.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "path": { "type": "string", "description": "Directory to list, relative to the sandbox root. Defaults to \".\" (the root)." }
+          "path": { "type": "string", "description": "Directory to list. Defaults to \".\" (the sandbox root)." }
         }
       }
     },
     {
       "name": "fs.read",
-      "description": "[fsRead] Reads a text file on the LOCAL machine, inside the sandbox root. `path` is required and relative to the root, or an ABSOLUTE path inside a folder the user granted via fs.request_access. Returns UTF-8 text with each line prefixed `N→` (1-indexed); a non-text (binary) file is refused with an error rather than returned as garbled content. Large files are truncated to a byte cap (see `max_bytes`) and flagged as truncated. Paths outside the sandbox and all granted folders are refused. Read-only.",
+      "description": "[fsRead] Reads a text file (UTF-8; binary is refused), each line prefixed `N→` (1-indexed). Returns up to `limit` lines starting at `offset`; a truncated result says which offset to continue from — read only the range you need. Path rules: see fs.list. Read-only.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "path": { "type": "string", "description": "File to read, relative to the sandbox root." },
-          "max_bytes": { "type": "number", "description": "Max bytes to read (default 10MB, hard ceiling 50MB). Larger files are truncated." }
+          "path": { "type": "string", "description": "File to read." },
+          "offset": { "type": "number", "description": "1-indexed line to start from (default 1)." },
+          "limit": { "type": "number", "description": "Max lines to return (default 1000)." },
+          "max_bytes": { "type": "number", "description": "Max bytes read from disk (default 10MB, ceiling 50MB). Rarely needed — use offset/limit instead." }
         },
         "required": ["path"]
       }
     },
     {
       "name": "fs.edit",
-      "description": "[fsWrite] Replaces old_string with new_string inside a text file on the LOCAL machine, inside the sandbox root or an ABSOLUTE path inside a folder the user granted via fs.request_access. old_string must match the file's CURRENT content exactly once, unless replace_all is true — 0 matches or 2+ matches without replace_all are refused with a clear error instead of guessing which occurrence to change. This is a plain find/replace, not a diff/patch: pass the exact text to remove and the exact text to insert (use fs.read first to see the file's current content and line numbers). Paths outside the sandbox and all granted folders are refused. Mutates the filesystem.",
+      "description": "[fsWrite] Replaces old_string with new_string inside a text file. old_string must match the CURRENT content exactly once, unless replace_all is true — 0 or 2+ matches are refused. Plain find/replace, not a patch: use fs.read first and copy the exact text. Path rules: see fs.list. Mutates the filesystem.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "path": { "type": "string", "description": "File to edit, relative to the sandbox root." },
-          "old_string": { "type": "string", "description": "Exact text to find. Must match exactly once in the file unless replace_all is true." },
-          "new_string": { "type": "string", "description": "Exact text to replace old_string with. May be empty to delete old_string." },
-          "replace_all": { "type": "boolean", "description": "Replace every occurrence of old_string instead of requiring exactly one (default false)." }
+          "path": { "type": "string", "description": "File to edit." },
+          "old_string": { "type": "string", "description": "Exact text to find. Must match exactly once unless replace_all is true." },
+          "new_string": { "type": "string", "description": "Exact replacement text. May be empty to delete old_string." },
+          "replace_all": { "type": "boolean", "description": "Replace every occurrence (default false)." }
         },
         "required": ["path", "old_string", "new_string"]
       }
     },
     {
       "name": "fs.search",
-      "description": "[fsRead] Searches recursively for a regular-expression pattern across text files on the LOCAL machine, starting at `path` (default \".\" = the sandbox root), inside the sandbox root or an ABSOLUTE path inside a folder the user granted via fs.request_access. Returns matching lines as `path:line: text`. Binary files and files over the read size cap are skipped, not erred. `case_sensitive` defaults to true. Results are capped at `max_results` (default 200, hard ceiling 1000); hitting the cap stops the search early and flags the result as truncated. An invalid pattern is refused before any file is read. Read-only.",
+      "description": "[fsRead] Recursive regex search across text files starting at `path`. Returns matches as `path:line: text`, capped at `max_results` (default 200, ceiling 1000; hitting the cap is flagged). Binary/oversized files are skipped. Path rules: see fs.list. Read-only.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "pattern": { "type": "string", "description": "Regular expression to search for, one line at a time." },
-          "path": { "type": "string", "description": "Directory (or file) to search, relative to the sandbox root. Defaults to \".\" (the root)." },
+          "pattern": { "type": "string", "description": "Regular expression, matched line by line." },
+          "path": { "type": "string", "description": "Directory (or file) to search. Defaults to \".\" (the sandbox root)." },
           "case_sensitive": { "type": "boolean", "description": "Case-sensitive match (default true)." },
-          "max_results": { "type": "number", "description": "Max matching lines to return (default 200, hard ceiling 1000)." }
+          "max_results": { "type": "number", "description": "Max matching lines (default 200, ceiling 1000)." }
         },
         "required": ["pattern"]
       }
     },
     {
       "name": "fs.write",
-      "description": "[fsWrite] Writes a text file on the LOCAL machine, inside the sandbox root, creating it or fully overwriting it. `path` and `content` are required; `path` is relative to the root, or an ABSOLUTE path inside a folder the user granted via fs.request_access. `create_dirs` (default true) controls whether missing parent directories are created. Content larger than 10MB is refused (not truncated). Paths outside the sandbox and all granted folders are refused. Mutates the filesystem.",
+      "description": "[fsWrite] Creates or fully overwrites a text file. Content over 10MB is refused. `create_dirs` (default true) creates missing parents. Path rules: see fs.list. Mutates the filesystem.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "path": { "type": "string", "description": "File to write, relative to the sandbox root. Overwritten if it exists." },
+          "path": { "type": "string", "description": "File to write. Overwritten if it exists." },
           "content": { "type": "string", "description": "Text content to write." },
-          "create_dirs": { "type": "boolean", "description": "Create missing parent directories (default true). If false, a missing parent makes the write fail." }
+          "create_dirs": { "type": "boolean", "description": "Create missing parent directories (default true)." }
         },
         "required": ["path", "content"]
       }
     },
     {
       "name": "fs.delete",
-      "description": "[fsWrite] Deletes a file or empty directory on the LOCAL machine, inside the sandbox root. `path` is required and relative to the root, or an ABSOLUTE path inside a folder the user granted via fs.request_access. A non-empty directory is NOT deleted (refused) — this never recursively wipes a subtree. Deleting the sandbox root or a granted folder itself is refused. Paths outside the sandbox and all granted folders are refused. Mutates the filesystem.",
+      "description": "[fsWrite] Deletes a file or EMPTY directory — never recursive, and deleting the sandbox root or a granted folder is refused. Path rules: see fs.list. Mutates the filesystem.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "path": { "type": "string", "description": "File or empty directory to delete, relative to the sandbox root." }
+          "path": { "type": "string", "description": "File or empty directory to delete." }
         },
         "required": ["path"]
       }
     },
     {
       "name": "fs.request_access",
-      "description": "[fsWrite] Asks the USER for permission to access a folder outside the sandbox root. If the user approves, the folder and everything under it become fully accessible (list, read, write, delete) to the other fs.* tools via ABSOLUTE paths, and the grant persists across restarts. If the user declines, do not retry without new instructions. Blocks until the user answers.",
+      "description": "[fsWrite] Asks the USER to grant full access (list/read/write/delete) to a folder outside the sandbox. If approved, all fs.* tools can use ABSOLUTE paths under it and the grant persists across restarts. If declined, do not retry without new instructions. Blocks until answered.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "path": { "type": "string", "description": "Absolute path of an EXISTING directory to request access to." }
+          "path": { "type": "string", "description": "Absolute path of an EXISTING directory." }
         },
         "required": ["path"]
       }
     },
     {
       "name": "fs.known_dirs",
-      "description": "[fsRead] Lists well-known folders of the LOCAL user account (home, Desktop, Documents, Downloads) as absolute paths, plus the sandbox root. Paths only — no folder contents are read. Use this to discover the real path of e.g. the user's Desktop, then call fs.request_access with it; folders outside the sandbox remain inaccessible until the user approves. Read-only, no parameters.",
+      "description": "[fsRead] Lists absolute paths of well-known user folders (home, Desktop, Documents, Downloads) plus the sandbox root — paths only, no contents. Use to find a real path before fs.request_access. No parameters.",
       "input_schema": {
         "type": "object",
         "properties": {}
