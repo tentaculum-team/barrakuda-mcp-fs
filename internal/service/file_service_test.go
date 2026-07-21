@@ -449,6 +449,56 @@ func TestSearchOutsideSandboxBlocked(t *testing.T) {
 	}
 }
 
+func TestResolveAccessTargetAlreadyAllowed(t *testing.T) {
+	svc, root := newSvc(t)
+	if dir, err := svc.ResolveAccessTarget(root); err != nil || dir != "" {
+		t.Fatalf("ResolveAccessTarget(root) = (%q, %v), want (\"\", nil)", dir, err)
+	}
+
+	svcG, granted := newSvcWithGrant(t)
+	if dir, err := svcG.ResolveAccessTarget(filepath.Join(granted, "sub", "f.txt")); err != nil || dir != "" {
+		t.Fatalf("ResolveAccessTarget(granted subpath) = (%q, %v), want (\"\", nil)", dir, err)
+	}
+}
+
+func TestResolveAccessTargetExistingDirOutsideSandbox(t *testing.T) {
+	svc, _ := newSvc(t)
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := svc.ResolveAccessTarget(outside)
+	if err != nil {
+		t.Fatalf("ResolveAccessTarget: %v", err)
+	}
+	if dir != outside {
+		t.Fatalf("ResolveAccessTarget(existing outside dir) = %q, want %q", dir, outside)
+	}
+}
+
+func TestResolveAccessTargetNewFileUsesParentDir(t *testing.T) {
+	svc, _ := newSvc(t)
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	notYetCreated := filepath.Join(outside, "hello.py")
+	dir, err := svc.ResolveAccessTarget(notYetCreated)
+	if err != nil {
+		t.Fatalf("ResolveAccessTarget: %v", err)
+	}
+	if dir != outside {
+		t.Fatalf("ResolveAccessTarget(new file) = %q, want parent %q", dir, outside)
+	}
+}
+
+func TestResolveAccessTargetDeepMissingPathNotFound(t *testing.T) {
+	svc, _ := newSvc(t)
+	if _, err := svc.ResolveAccessTarget(filepath.Join(t.TempDir(), "does", "not", "exist", "f.txt")); err == nil {
+		t.Fatal("ResolveAccessTarget(deep missing path): err = nil, want error")
+	}
+}
+
 func TestDeleteGrantedRootBlocked(t *testing.T) {
 	svc, granted := newSvcWithGrant(t)
 	if err := svc.Delete(granted); !errors.Is(err, errorsx.ErrCannotDeleteRoot) {
