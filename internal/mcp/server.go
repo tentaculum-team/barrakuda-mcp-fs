@@ -19,17 +19,17 @@ import (
 func NewServer(fileService *service.FileService, grants *service.GrantStore) *mcpserver.MCPServer {
 	s := mcpserver.NewMCPServer(
 		"barrakuda-mcp-fs",
-		"0.1.0",
+		"0.2.0",
 		mcpserver.WithToolCapabilities(false),
 		mcpserver.WithElicitation(),
 	)
 
-	s.AddTool(fsListTool(fileService), fsListHandler(fileService))
-	s.AddTool(fsReadTool(fileService), fsReadHandler(fileService))
-	s.AddTool(fsEditTool(fileService), fsEditHandler(fileService))
-	s.AddTool(fsSearchTool(fileService), fsSearchHandler(fileService))
-	s.AddTool(fsWriteTool(fileService), fsWriteHandler(fileService))
-	s.AddTool(fsDeleteTool(fileService), fsDeleteHandler(fileService))
+	s.AddTool(fsListTool(fileService), fsListHandler(s, fileService, grants))
+	s.AddTool(fsReadTool(fileService), fsReadHandler(s, fileService, grants))
+	s.AddTool(fsEditTool(fileService), fsEditHandler(s, fileService, grants))
+	s.AddTool(fsSearchTool(fileService), fsSearchHandler(s, fileService, grants))
+	s.AddTool(fsWriteTool(fileService), fsWriteHandler(s, fileService, grants))
+	s.AddTool(fsDeleteTool(fileService), fsDeleteHandler(s, fileService, grants))
 	s.AddTool(fsRequestAccessTool(grants), fsRequestAccessHandler(s, fileService, grants))
 	s.AddTool(fsKnownDirsTool(), fsKnownDirsHandler(fileService))
 
@@ -42,10 +42,8 @@ func fsListTool(fs *service.FileService) mcpsdk.Tool {
 			"[fsRead] Lists the entries of a directory on the LOCAL machine, "+
 				"inside the sandbox root ("+fs.Root()+"). `path` is relative to "+
 				"that root (default \".\" = the root itself), or an ABSOLUTE path "+
-				"inside a folder the user granted via fs.request_access. Paths "+
-				"that escape the sandbox and all granted folders (via .., an "+
-				"absolute path, or a symlink pointing outside) are refused. "+
-				"Read-only.",
+				"anywhere else — first use outside the sandbox asks the user to "+
+				"approve (blocks until answered; persists after). Read-only.",
 		),
 		mcpsdk.WithString("path",
 			mcpsdk.Description("Directory to list, relative to the sandbox root. Defaults to \".\" (the root)."),
@@ -57,9 +55,12 @@ func fsListTool(fs *service.FileService) mcpsdk.Tool {
 	)
 }
 
-func fsListHandler(fs *service.FileService) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+func fsListHandler(srv *mcpserver.MCPServer, fs *service.FileService, grants *service.GrantStore) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		path := req.GetString("path", ".")
+		if res := ensureAccess(ctx, srv, fs, grants, path); res != nil {
+			return res, nil
+		}
 
 		entries, err := fs.List(path)
 		if err != nil {
@@ -74,13 +75,13 @@ func fsReadTool(fs *service.FileService) mcpsdk.Tool {
 		mcpsdk.WithDescription(
 			"[fsRead] Reads a text file on the LOCAL machine, inside the sandbox "+
 				"root ("+fs.Root()+"). `path` is required and relative to the "+
-				"root, or an ABSOLUTE path inside a folder the user granted via "+
-				"fs.request_access. Returns UTF-8 text; a non-text (binary) file "+
+				"root, or an ABSOLUTE path anywhere else — first use outside the "+
+				"sandbox asks the user to approve (blocks until answered; "+
+				"persists after). Returns UTF-8 text; a non-text (binary) file "+
 				"is refused with an error rather than returned as garbled "+
 				"content. Output is limited to `limit` lines (default 1000) "+
 				"starting at line `offset` — a truncated result says which "+
-				"offset to continue from; read only the range you need. Paths "+
-				"outside the sandbox and all granted folders are refused. "+
+				"offset to continue from; read only the range you need. "+
 				"Read-only.",
 		),
 		mcpsdk.WithString("path",
@@ -103,11 +104,14 @@ func fsReadTool(fs *service.FileService) mcpsdk.Tool {
 	)
 }
 
-func fsReadHandler(fs *service.FileService) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+func fsReadHandler(srv *mcpserver.MCPServer, fs *service.FileService, grants *service.GrantStore) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		path, err := req.RequireString("path")
 		if err != nil {
 			return mcpsdk.NewToolResultError(err.Error()), nil
+		}
+		if res := ensureAccess(ctx, srv, fs, grants, path); res != nil {
+			return res, nil
 		}
 		maxBytes := int64(req.GetInt("max_bytes", 0))
 		offset := req.GetInt("offset", 1)
@@ -126,15 +130,15 @@ func fsEditTool(fs *service.FileService) mcpsdk.Tool {
 		mcpsdk.WithDescription(
 			"[fsWrite] Replaces old_string with new_string inside a text file "+
 				"on the LOCAL machine, inside the sandbox root ("+fs.Root()+") "+
-				"or an ABSOLUTE path inside a folder the user granted via "+
-				"fs.request_access. old_string must match the file's CURRENT "+
+				"or an ABSOLUTE path anywhere else — first use outside the "+
+				"sandbox asks the user to approve (blocks until answered; "+
+				"persists after). old_string must match the file's CURRENT "+
 				"content exactly once, unless replace_all is true — 0 matches or "+
 				"2+ matches without replace_all are refused with a clear error "+
 				"instead of guessing which occurrence to change. This is a plain "+
 				"find/replace, not a diff/patch: pass the exact text to remove "+
 				"and the exact text to insert (use fs.read first to see the "+
-				"file's current content and line numbers). Paths outside the "+
-				"sandbox and all granted folders are refused. Mutates the "+
+				"file's current content and line numbers). Mutates the "+
 				"filesystem.",
 		),
 		mcpsdk.WithString("path",
@@ -159,11 +163,14 @@ func fsEditTool(fs *service.FileService) mcpsdk.Tool {
 	)
 }
 
-func fsEditHandler(fs *service.FileService) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+func fsEditHandler(srv *mcpserver.MCPServer, fs *service.FileService, grants *service.GrantStore) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		path, err := req.RequireString("path")
 		if err != nil {
 			return mcpsdk.NewToolResultError(err.Error()), nil
+		}
+		if res := ensureAccess(ctx, srv, fs, grants, path); res != nil {
+			return res, nil
 		}
 		oldString, err := req.RequireString("old_string")
 		if err != nil {
@@ -202,8 +209,9 @@ func fsSearchTool(fs *service.FileService) mcpsdk.Tool {
 			"[fsRead] Searches recursively for a regular-expression pattern "+
 				"across text files on the LOCAL machine, starting at `path` "+
 				"(default \".\" = the sandbox root "+fs.Root()+"), inside the "+
-				"sandbox root or an ABSOLUTE path inside a folder the user "+
-				"granted via fs.request_access. Returns matching lines as "+
+				"sandbox root or an ABSOLUTE path anywhere else — first use "+
+				"outside the sandbox asks the user to approve (blocks until "+
+				"answered; persists after). Returns matching lines as "+
 				"`path:line: text`. Binary files and files over the read size "+
 				"cap are skipped, not erred. `case_sensitive` defaults to true. "+
 				"Results are capped at `max_results` (default 200, hard "+
@@ -231,13 +239,16 @@ func fsSearchTool(fs *service.FileService) mcpsdk.Tool {
 	)
 }
 
-func fsSearchHandler(fs *service.FileService) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+func fsSearchHandler(srv *mcpserver.MCPServer, fs *service.FileService, grants *service.GrantStore) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		pattern, err := req.RequireString("pattern")
 		if err != nil {
 			return mcpsdk.NewToolResultError(err.Error()), nil
 		}
 		path := req.GetString("path", ".")
+		if res := ensureAccess(ctx, srv, fs, grants, path); res != nil {
+			return res, nil
+		}
 		caseSensitive := req.GetBool("case_sensitive", true)
 		maxResults := req.GetInt("max_results", 0)
 
@@ -255,11 +266,11 @@ func fsWriteTool(fs *service.FileService) mcpsdk.Tool {
 			"[fsWrite] Writes a text file on the LOCAL machine, inside the "+
 				"sandbox root ("+fs.Root()+"), creating it or fully overwriting "+
 				"it. `path` and `content` are required; `path` is relative to the "+
-				"root, or an ABSOLUTE path inside a folder the user granted via "+
-				"fs.request_access. `create_dirs` (default true) controls whether "+
+				"root, or an ABSOLUTE path anywhere else — first use outside the "+
+				"sandbox asks the user to approve (blocks until answered; "+
+				"persists after). `create_dirs` (default true) controls whether "+
 				"missing parent directories are created. Content larger than 10MB "+
-				"is refused (not truncated). Paths outside the sandbox and all "+
-				"granted folders are refused. Mutates the filesystem.",
+				"is refused (not truncated). Mutates the filesystem.",
 		),
 		mcpsdk.WithString("path",
 			mcpsdk.Required(),
@@ -279,11 +290,14 @@ func fsWriteTool(fs *service.FileService) mcpsdk.Tool {
 	)
 }
 
-func fsWriteHandler(fs *service.FileService) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+func fsWriteHandler(srv *mcpserver.MCPServer, fs *service.FileService, grants *service.GrantStore) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		path, err := req.RequireString("path")
 		if err != nil {
 			return mcpsdk.NewToolResultError(err.Error()), nil
+		}
+		if res := ensureAccess(ctx, srv, fs, grants, path); res != nil {
+			return res, nil
 		}
 		content, err := req.RequireString("content")
 		if err != nil {
@@ -310,11 +324,11 @@ func fsDeleteTool(fs *service.FileService) mcpsdk.Tool {
 		mcpsdk.WithDescription(
 			"[fsWrite] Deletes a file or empty directory on the LOCAL machine, "+
 				"inside the sandbox root ("+fs.Root()+"). `path` is required and "+
-				"relative to the root, or an ABSOLUTE path inside a folder the "+
-				"user granted via fs.request_access. A non-empty directory is NOT "+
+				"relative to the root, or an ABSOLUTE path anywhere else — first "+
+				"use outside the sandbox asks the user to approve (blocks until "+
+				"answered; persists after). A non-empty directory is NOT "+
 				"deleted (refused) — this never recursively wipes a subtree. "+
 				"Deleting the sandbox root or a granted folder itself is refused. "+
-				"Paths outside the sandbox and all granted folders are refused. "+
 				"Mutates the filesystem.",
 		),
 		mcpsdk.WithString("path",
@@ -328,11 +342,14 @@ func fsDeleteTool(fs *service.FileService) mcpsdk.Tool {
 	)
 }
 
-func fsDeleteHandler(fs *service.FileService) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+func fsDeleteHandler(srv *mcpserver.MCPServer, fs *service.FileService, grants *service.GrantStore) func(context.Context, mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		path, err := req.RequireString("path")
 		if err != nil {
 			return mcpsdk.NewToolResultError(err.Error()), nil
+		}
+		if res := ensureAccess(ctx, srv, fs, grants, path); res != nil {
+			return res, nil
 		}
 
 		if err := fs.Delete(path); err != nil {
@@ -345,13 +362,18 @@ func fsDeleteHandler(fs *service.FileService) func(context.Context, mcpsdk.CallT
 func fsRequestAccessTool(grants *service.GrantStore) mcpsdk.Tool {
 	return mcpsdk.NewTool("fs.request_access",
 		mcpsdk.WithDescription(
-			"[fsWrite] Asks the USER for permission to access a folder outside "+
-				"the sandbox root. If the user approves, the folder and everything "+
-				"under it become fully accessible (list, read, write, delete) to "+
-				"the other fs.* tools via ABSOLUTE paths, and the grant persists "+
-				"across restarts (stored in "+grants.Path()+"; the user can revoke "+
-				"by editing that file). If the user declines, do not retry without "+
-				"new instructions. Blocks until the user answers.",
+			"[fsWrite] OPTIONAL pre-authorization: asks the USER for permission "+
+				"to access a folder outside the sandbox root, without performing "+
+				"any operation on it. Every other fs.* tool already does this "+
+				"itself on first use of an absolute path — call this ONLY to "+
+				"secure access ahead of time (e.g. before a multi-step task on "+
+				"that folder) or to check access without touching anything. If "+
+				"the user approves, the folder and everything under it become "+
+				"fully accessible (list, read, write, delete) to the other fs.* "+
+				"tools via ABSOLUTE paths, and the grant persists across restarts "+
+				"(stored in "+grants.Path()+"; the user can revoke by editing that "+
+				"file). If the user declines, do not retry without new "+
+				"instructions. Blocks until the user answers.",
 		),
 		mcpsdk.WithString("path",
 			mcpsdk.Required(),
@@ -393,44 +415,71 @@ func fsRequestAccessHandler(srv *mcpserver.MCPServer, fs *service.FileService, g
 				fmt.Sprintf("%s is already accessible; no permission needed", dir),
 			), nil
 		}
-
-		res, err := srv.RequestElicitation(ctx, mcpsdk.ElicitationRequest{
-			Request: mcpsdk.Request{Method: string(mcpsdk.MethodElicitationCreate)},
-			Params: mcpsdk.ElicitationParams{
-				Message: fmt.Sprintf(
-					"The assistant requests full access (read, write, list, delete) to:\n%s\nand everything under it. The grant persists across restarts. Allow?",
-					dir,
-				),
-				// Spec requires a schema for form mode; empty object = plain yes/no,
-				// the decision is carried by res.Action.
-				RequestedSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-			},
-		})
-		if err != nil {
-			if errors.Is(err, mcpserver.ErrElicitationNotSupported) || errors.Is(err, mcpserver.ErrNoActiveSession) {
-				return mcpsdk.NewToolResultError(
-					fmt.Sprintf("request_access failed: the connected client cannot prompt the user for permission (no elicitation support); access to %q cannot be granted", dir),
-				), nil
-			}
-			return mcpsdk.NewToolResultError(
-				fmt.Sprintf("request_access failed: %s", err),
-			), nil
-		}
-
-		if res.Action != mcpsdk.ElicitationResponseActionAccept {
-			return mcpsdk.NewToolResultError(
-				fmt.Sprintf("the user denied access to %q; do not retry without new instructions from the user", dir),
-			), nil
-		}
-		if err := grants.Add(dir); err != nil {
-			return mcpsdk.NewToolResultError(
-				fmt.Sprintf("request_access failed: user approved but the grant could not be saved: %s", err),
-			), nil
+		if res := elicitAndGrant(ctx, srv, grants, dir); res != nil {
+			return res, nil
 		}
 		return mcpsdk.NewToolResultText(
 			fmt.Sprintf("access granted to %s; you may now use absolute paths under it with the fs.* tools", dir),
 		), nil
 	}
+}
+
+// ensureAccess is the auto-consent gate every fs.* handler runs before
+// touching a path: for an ABSOLUTE path outside the sandbox root and any
+// grant, it elicits the user right there in the same tool call (via
+// ResolveAccessTarget + elicitAndGrant) instead of requiring the model to
+// call fs.request_access as a separate round-trip first. Returns nil to let
+// the caller proceed; a non-nil result must be returned to the model as-is.
+// Relative paths are untouched (sandbox-only, no grant ever applies) and any
+// resolution error here is swallowed — the caller's own path handling
+// (fs.List/fs.Read/…) already produces a clear, correctly-typed error for
+// those cases (not found, empty path, etc.).
+func ensureAccess(ctx context.Context, srv *mcpserver.MCPServer, fs *service.FileService, grants *service.GrantStore, path string) *mcpsdk.CallToolResult {
+	if !filepath.IsAbs(path) {
+		return nil
+	}
+	dir, err := fs.ResolveAccessTarget(path)
+	if err != nil || dir == "" {
+		return nil
+	}
+	return elicitAndGrant(ctx, srv, grants, dir)
+}
+
+// elicitAndGrant asks the user (via MCP elicitation) for full access to dir
+// and persists the grant on approval. nil = approved and saved; non-nil is
+// the error/decline result to return to the model verbatim.
+func elicitAndGrant(ctx context.Context, srv *mcpserver.MCPServer, grants *service.GrantStore, dir string) *mcpsdk.CallToolResult {
+	res, err := srv.RequestElicitation(ctx, mcpsdk.ElicitationRequest{
+		Request: mcpsdk.Request{Method: string(mcpsdk.MethodElicitationCreate)},
+		Params: mcpsdk.ElicitationParams{
+			Message: fmt.Sprintf(
+				"The assistant requests full access (read, write, list, delete) to:\n%s\nand everything under it. The grant persists across restarts. Allow?",
+				dir,
+			),
+			// Spec requires a schema for form mode; empty object = plain yes/no,
+			// the decision is carried by res.Action.
+			RequestedSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+	})
+	if err != nil {
+		if errors.Is(err, mcpserver.ErrElicitationNotSupported) || errors.Is(err, mcpserver.ErrNoActiveSession) {
+			return mcpsdk.NewToolResultError(
+				fmt.Sprintf("access check failed: the connected client cannot prompt the user for permission (no elicitation support); access to %q cannot be granted", dir),
+			)
+		}
+		return mcpsdk.NewToolResultError(fmt.Sprintf("access check failed: %s", err))
+	}
+	if res.Action != mcpsdk.ElicitationResponseActionAccept {
+		return mcpsdk.NewToolResultError(
+			fmt.Sprintf("the user denied access to %q; do not retry without new instructions from the user", dir),
+		)
+	}
+	if err := grants.Add(dir); err != nil {
+		return mcpsdk.NewToolResultError(
+			fmt.Sprintf("access check failed: user approved but the grant could not be saved: %s", err),
+		)
+	}
+	return nil
 }
 
 func fsKnownDirsTool() mcpsdk.Tool {
@@ -439,10 +488,11 @@ func fsKnownDirsTool() mcpsdk.Tool {
 			"[fsRead] Lists well-known folders of the LOCAL user account (home, "+
 				"Desktop, Documents, Downloads) as absolute paths, plus the "+
 				"sandbox root. Paths only — no folder contents are read. Use "+
-				"this to discover the real path of e.g. the user's Desktop, "+
-				"then call fs.request_access with it; folders outside the "+
-				"sandbox remain inaccessible until the user approves. "+
-				"Read-only, no parameters.",
+				"this to discover the real path of e.g. the user's Desktop, then "+
+				"call the fs.* tool you actually need with it directly (fs.write, "+
+				"fs.read, …) — first use outside the sandbox asks the user to "+
+				"approve inline, no separate step needed. Read-only, no "+
+				"parameters.",
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -458,7 +508,7 @@ func fsKnownDirsHandler(fs *service.FileService) func(context.Context, mcpsdk.Ca
 		for _, d := range service.KnownDirs() {
 			fmt.Fprintf(&b, "%s: %s\n", d.Name, d.Path)
 		}
-		b.WriteString("folders outside the sandbox require fs.request_access (user approval) before use")
+		b.WriteString("folders outside the sandbox: just call the fs.* tool you need with the absolute path — first use asks the user to approve inline")
 		return mcpsdk.NewToolResultText(b.String()), nil
 	}
 }

@@ -79,6 +79,62 @@ func (s *FileService) WithinAllowed(p string) bool {
 	return isWithin(s.root, p) || s.grants.Contains(p)
 }
 
+// ResolveAccessTarget reports which existing directory needs a user grant
+// before the ABSOLUTE path absPath can be used by any fs.* operation — lets
+// the mcp layer elicit consent inline (in the SAME tool call) instead of
+// requiring the model to call fs.request_access as a separate step first.
+// Returns "" if absPath resolves under the sandbox root or an already
+// granted folder (nothing to ask) — however deep, since walking through
+// already-trusted territory is safe.
+//
+// Otherwise the target is only proposed if AT MOST ONE trailing path
+// component is missing (the file/dir an op is about to create, e.g. a new
+// file written straight to the Desktop); every ancestor above that must
+// already exist. This is deliberately NOT an unbounded walk-up-to-nearest-
+// existing-ancestor: for a deep bogus/untrusted path with no real ancestor
+// until the OS drive root (which always "exists"), that walk would land on
+// the drive root itself and offer it as the grant target — asking the user
+// to hand over an entire disk. A deep missing path under an UNGRANTED folder
+// is reported as ErrNotFound instead; the caller's normal fs.* call still
+// fails with a clear error, it just skips the auto-elicit shortcut (the
+// explicit fs.request_access tool remains available for that case).
+func (s *FileService) ResolveAccessTarget(absPath string) (string, error) {
+	if strings.TrimSpace(absPath) == "" {
+		return "", errorsx.ErrEmptyPath
+	}
+
+	existing := filepath.Clean(absPath)
+	missing := 0
+	for {
+		info, err := os.Lstat(existing)
+		if err == nil {
+			if !info.IsDir() {
+				existing = filepath.Dir(existing) // leaf itself exists as a file: target is its parent dir
+			}
+			break
+		}
+		missing++
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", errorsx.ErrNotFound
+		}
+		existing = parent
+	}
+
+	real, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", err
+	}
+	real = filepath.Clean(real)
+	if s.WithinAllowed(real) {
+		return "", nil
+	}
+	if missing > 1 {
+		return "", errorsx.ErrNotFound
+	}
+	return real, nil
+}
+
 // allowedRoots returns the sandbox root plus all granted directories.
 func (s *FileService) allowedRoots() []string {
 	return append([]string{s.root}, s.grants.Dirs()...)

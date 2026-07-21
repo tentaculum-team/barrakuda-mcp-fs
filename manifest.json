@@ -1,6 +1,6 @@
 {
   "name": "Barrakuda FS",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sandboxed local filesystem access — list/read/search/edit/write/delete inside a confined root, plus user-approved grants for folders outside it.",
   "author": "Tentaculum-team",
   "license": "MIT",
@@ -14,7 +14,7 @@
   "tools": [
     {
       "name": "fs.list",
-      "description": "[fsRead] Lists a directory on the LOCAL machine. Path rules for ALL fs.* tools: `path` is relative to the sandbox root (default \".\"), or an ABSOLUTE path inside a folder the user granted via fs.request_access; anything outside (.., symlinks out, other absolute paths) is refused. Read-only.",
+      "description": "[fsRead] Lists a directory on the LOCAL machine. Path rules for ALL fs.* tools: `path` is relative to the sandbox root (default \".\"), or an ABSOLUTE path anywhere else — first use outside the sandbox asks the user to approve inline (blocks until answered; persists after). Read-only.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -90,7 +90,7 @@
     },
     {
       "name": "fs.request_access",
-      "description": "[fsWrite] Asks the USER to grant full access (list/read/write/delete) to a folder outside the sandbox. If approved, all fs.* tools can use ABSOLUTE paths under it and the grant persists across restarts. If declined, do not retry without new instructions. Blocks until answered.",
+      "description": "[fsWrite] OPTIONAL pre-authorization: asks the USER for access to a folder outside the sandbox without performing an operation. Every other fs.* tool already does this itself on first use of an absolute path — call this only to secure access ahead of time, or to check access without touching anything. If approved, all fs.* tools can use ABSOLUTE paths under it and the grant persists across restarts. If declined, do not retry without new instructions. Blocks until answered.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -101,7 +101,7 @@
     },
     {
       "name": "fs.known_dirs",
-      "description": "[fsRead] Lists absolute paths of well-known user folders (home, Desktop, Documents, Downloads) plus the sandbox root — paths only, no contents. Use to find a real path before fs.request_access. No parameters.",
+      "description": "[fsRead] Lists absolute paths of well-known user folders (home, Desktop, Documents, Downloads) plus the sandbox root — paths only, no contents. Use to find a real path, then call the fs.* tool you need with it directly. No parameters.",
       "input_schema": {
         "type": "object",
         "properties": {}
