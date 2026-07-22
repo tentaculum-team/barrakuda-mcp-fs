@@ -1,6 +1,7 @@
 {
   "name": "Barrakuda FS",
-  "version": "0.2.0",
+  "version": "0.4.0",
+  "manifest_version": 2,
   "description": "Sandboxed local filesystem access — list/read/search/edit/write/delete inside a confined root, plus user-approved grants for folders outside it.",
   "author": "Tentaculum-team",
   "license": "MIT",
@@ -15,6 +16,7 @@
     {
       "name": "fs.list",
       "description": "[fsRead] Lists a directory on the LOCAL machine. Path rules for ALL fs.* tools: `path` is relative to the sandbox root (default \".\"), or an ABSOLUTE path anywhere else — first use outside the sandbox asks the user to approve inline (blocks until answered; persists after). Read-only.",
+      "capabilities": ["fs:read"],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -25,6 +27,7 @@
     {
       "name": "fs.read",
       "description": "[fsRead] Reads a text file (UTF-8; binary is refused), each line prefixed `N→` (1-indexed). Returns up to `limit` lines starting at `offset`; a truncated result says which offset to continue from — read only the range you need. Path rules: see fs.list. Read-only.",
+      "capabilities": ["fs:read"],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -39,6 +42,7 @@
     {
       "name": "fs.edit",
       "description": "[fsWrite] Replaces old_string with new_string inside a text file. old_string must match the CURRENT content exactly once, unless replace_all is true — 0 or 2+ matches are refused. Plain find/replace, not a patch: use fs.read first and copy the exact text. Path rules: see fs.list. Mutates the filesystem.",
+      "capabilities": ["fs:read", "fs:write"],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -53,6 +57,7 @@
     {
       "name": "fs.search",
       "description": "[fsRead] Recursive regex search across text files starting at `path`. Returns matches as `path:line: text`, capped at `max_results` (default 200, ceiling 1000; hitting the cap is flagged). Binary/oversized files are skipped. Path rules: see fs.list. Read-only.",
+      "capabilities": ["fs:read"],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -65,8 +70,23 @@
       }
     },
     {
+      "name": "fs.glob",
+      "description": "[fsRead] Finds files by NAME pattern recursively, starting at `path` (default \".\" = the sandbox root). This matches file NAMES, not content — use fs.search for content. `pattern` is shell-glob syntax (`*`, `?`, `[...]`), not regex: `\"*.go\"` matches at any depth by base name; a pattern containing `/` matches against the path relative to `path` instead. Path rules: see fs.list. Read-only.",
+      "capabilities": ["fs:read"],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": { "type": "string", "description": "Shell-glob pattern to match file names against (e.g. \"*.go\", \"internal/*.go\"). Not regex." },
+          "path": { "type": "string", "description": "Directory to search under. Defaults to \".\" (the sandbox root)." },
+          "max_results": { "type": "number", "description": "Max matching paths to return (default 200, hard ceiling 1000)." }
+        },
+        "required": ["pattern"]
+      }
+    },
+    {
       "name": "fs.write",
       "description": "[fsWrite] Creates or fully overwrites a text file. Content over 10MB is refused. `create_dirs` (default true) creates missing parents. Path rules: see fs.list. Mutates the filesystem.",
+      "capabilities": ["fs:read", "fs:write"],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -80,6 +100,7 @@
     {
       "name": "fs.delete",
       "description": "[fsWrite] Deletes a file or EMPTY directory — never recursive, and deleting the sandbox root or a granted folder is refused. Path rules: see fs.list. Mutates the filesystem.",
+      "capabilities": ["fs:read", "fs:delete"],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -91,6 +112,7 @@
     {
       "name": "fs.request_access",
       "description": "[fsWrite] OPTIONAL pre-authorization: asks the USER for access to a folder outside the sandbox without performing an operation. Every other fs.* tool already does this itself on first use of an absolute path — call this only to secure access ahead of time, or to check access without touching anything. If approved, all fs.* tools can use ABSOLUTE paths under it and the grant persists across restarts. If declined, do not retry without new instructions. Blocks until answered.",
+      "capabilities": [],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -102,6 +124,7 @@
     {
       "name": "fs.known_dirs",
       "description": "[fsRead] Lists absolute paths of well-known user folders (home, Desktop, Documents, Downloads) plus the sandbox root — paths only, no contents. Use to find a real path, then call the fs.* tool you need with it directly. No parameters.",
+      "capabilities": ["fs:read"],
       "input_schema": {
         "type": "object",
         "properties": {}

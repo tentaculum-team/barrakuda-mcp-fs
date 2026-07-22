@@ -7,8 +7,6 @@ import (
 	"barrakuda-mcp-fs/internal/mcp"
 	"barrakuda-mcp-fs/internal/repository"
 	"barrakuda-mcp-fs/internal/service"
-
-	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 func main() {
@@ -36,10 +34,5 @@ func main() {
 	}
 	fileService.SetGrantStore(grants)
 
-	mcpServer := mcp.NewServer(fileService, grants)
-
-	if err := mcpserver.ServeStdio(mcpServer); err != nil {
-		fmt.Fprintln(os.Stderr, "server error:", err)
-		os.Exit(1)
-	}
+	mcp.Serve(fileService, grants)
 }
