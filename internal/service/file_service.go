@@ -367,6 +367,87 @@ func (s *FileService) Search(relPath, pattern string, caseSensitive bool, maxRes
 	return domain.SearchResult{Matches: matches, Truncated: truncated}, nil
 }
 
+// Glob finds files by NAME pattern recursively under relPath — the
+// filename-search counterpart to Search's content-search. A pattern with a
+// "/" matches against the path relative to relPath (e.g. "internal/*.go");
+// without one, it matches against the file's base name only (e.g. "*.go"
+// matches at any depth). Shell-glob syntax (path.Match: *, ?, [...]), not
+// regex — matching a name is a much narrower job than matching content, so
+// it doesn't need regex's power, and this way the two tools' pattern
+// syntax stays visibly different (no risk of pasting a content regex where
+// a name glob was expected, or vice versa).
+func (s *FileService) Glob(relPath, pattern string, maxResults int) (domain.GlobResult, error) {
+	abs, err := s.resolvePath(relPath)
+	if err != nil {
+		return domain.GlobResult{}, err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return domain.GlobResult{}, errorsx.ErrNotFound
+		}
+		return domain.GlobResult{}, err
+	}
+
+	// Validate the pattern up front (same "fail before touching any file"
+	// contract Search has for an invalid regex) — filepath.Match only
+	// reports ErrBadPattern when it actually tries to match, so probe it
+	// once against an arbitrary string before walking.
+	if _, err := filepath.Match(pattern, "probe"); err != nil {
+		return domain.GlobResult{}, fmt.Errorf("%w: %s", errorsx.ErrInvalidPattern, err)
+	}
+	matchFullPath := strings.Contains(pattern, "/")
+
+	limit := DefaultMaxSearchResults
+	if maxResults > 0 {
+		limit = maxResults
+	}
+	if limit > MaxSearchResults {
+		limit = MaxSearchResults
+	}
+
+	var paths []string
+	truncated := false
+
+	walkErr := filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+
+		// Same symlink-escape close as Search: a file entry that's itself a
+		// symlink pointing outside the sandbox/grants must not be listed.
+		real, err := filepath.EvalSymlinks(p)
+		if err != nil || !s.WithinAllowed(real) {
+			return nil
+		}
+
+		candidate := filepath.Base(p)
+		if matchFullPath {
+			rel, err := filepath.Rel(abs, p)
+			if err != nil {
+				return nil
+			}
+			candidate = filepath.ToSlash(rel)
+		}
+
+		matched, _ := filepath.Match(pattern, candidate)
+		if !matched {
+			return nil
+		}
+
+		paths = append(paths, s.displayPath(p))
+		if len(paths) >= limit {
+			truncated = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return domain.GlobResult{}, walkErr
+	}
+
+	return domain.GlobResult{Paths: paths, Truncated: truncated}, nil
+}
+
 // displayPath renders an absolute path the way callers should reference it
 // again: relative to the sandbox root when inside it, absolute otherwise
 // (a grant, reachable only via absolute path — same convention every fs.*

@@ -39,3 +39,12 @@ type SearchResult struct {
 	Matches   []SearchMatch
 	Truncated bool
 }
+
+// GlobResult is the outcome of FileService.Glob — file NAMES matching a
+// pattern, unlike Search which matches file CONTENT. Paths are rendered the
+// same way SearchMatch.Path is (relative to the sandbox root, or absolute
+// if only reachable via a grant).
+type GlobResult struct {
+	Paths     []string
+	Truncated bool
+}

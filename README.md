@@ -1,7 +1,7 @@
 # barrakuda-mcp-fs
 
 A local [MCP](https://modelcontextprotocol.io/specification) server (stdio,
-built on [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go)) that gives an
+hand-rolled JSON-RPC, no SDK — see `internal/mcp/server.go`) that gives an
 MCP client real filesystem access — **list, read, search, edit, write,
 delete** — on the machine this server runs on, confined to a single sandbox
 directory. It is meant
@@ -62,6 +62,13 @@ every tool below):
   default 200, hard ceiling 1000) → recursive grep across text files,
   results as `path:line: text`. Binary/oversized files are skipped, not
   erred; an invalid pattern is refused before any file is read.
+- **`fs.glob`** — `pattern` (required, shell-glob — `*`/`?`/`[...]`, not
+  regexp), `path` (optional, default `.`), `max_results` (optional, default
+  200, hard ceiling 1000) → recursive filename search (`find . -name`, not
+  `grep`). A pattern with no `/` matches the base name at any depth
+  (`"*.go"`); one with a `/` matches the path relative to `path`
+  (`"internal/*.go"`). Use this to *find* a file; use `fs.search` to search
+  file *content*.
 - **`fs.known_dirs`** — no params → well-known folder paths (home,
   Desktop, Documents, Downloads) plus the sandbox root, for discovering a
   real path to pass to `fs.request_access`.
@@ -121,28 +128,39 @@ groups.
   Barrakuda app's catalog serves (curator adds `package` pointing at this
   repo's GitHub Release zips); the app installs and runs this like any
   community mod, no special-casing
-- `release/`            — per-OS release zips (`make release`, gitignored;
-  built via `make_release_zip.py`, then `gh release create` uploads them)
+- `release/`            — per-OS release zips (gitignored; built and
+  published by `.github/workflows/release.yml` on every `v*` tag push, not
+  a local script)
 
 ## Build
 
 ```
-make build          # local binary -> bin/barrakuda-mcp-fs[.exe]
-make build-cross    # the 4 Tauri sidecar targets -> bin/barrakuda-mcp-fs-<triple>[.exe]
-make lint           # go vet ./...
+go build -buildvcs=false ./...   # local binary -> ./api[.exe]
+go vet -buildvcs=false ./...     # lint
 ```
 
-`make` passes `-buildvcs=false` because this tree is not a git repo yet; drop
-that flag once it becomes one. Without `make`, use
-`go build -buildvcs=false ./...`.
+No Makefile — cross-compiling for release is `.github/workflows/release.yml`'s
+job, not something you need locally.
+
+## Release
+
+Push a `v*` tag (e.g. `v0.3.0`) and `.github/workflows/release.yml`
+cross-compiles, packages the windows/linux/macos zips (entry binary renamed
+to the bare `entry` name from `manifest.json`, plus `manifest.json` itself),
+and publishes them as a GitHub Release via `gh release create` — no local
+script, no Python, no Makefile.
 
 ## Try it (manual stdio smoke test)
 
 The server speaks MCP over stdio: JSON-RPC requests (one per line) on stdin,
 responses on stdout. The sandbox root is **wherever you launch it from**, so run
-it from inside a throwaway directory. Note a real client sends one request and
-waits for its response; piping many at once lets the server handle them
-concurrently, so responses may come back out of order.
+it from inside a throwaway directory. Requests are handled strictly in
+order, one at a time — a real client always waits for a tool call's
+response before sending the next one, which is also what lets `fs.request_access`
+block mid-request on a synchronous elicitation round-trip without any
+request-id bookkeeping. Piping many lines at once (as below) works, but
+responses come back in the same order the requests were sent, not
+concurrently.
 
 ```
 mkdir /tmp/fs-sandbox && cd /tmp/fs-sandbox
@@ -158,6 +176,6 @@ Request `id:3` writes a file inside the sandbox and succeeds; request `id:4`
 tries to read a file above the root and comes back as a structured
 sandbox-escape error with nothing accessed.
 
-For real use, point an MCP-aware client (Claude Desktop/Code, the mcp-go
+For real use, point an MCP-aware client (Claude Desktop/Code, an MCP
 inspector, or the Barrakuda app) at the built binary, launched with its cwd set
 to the directory you want to expose as the sandbox.
